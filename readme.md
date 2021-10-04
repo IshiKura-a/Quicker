@@ -6,7 +6,16 @@
 ```json
 {
   "username": "username",
-  "password": "password"
+  "password": "password",
+  "buddies": [
+    {
+      "username": "username",
+      "password": "password"
+    },
+    {
+      "username": "username",
+      "password": "password"
+    }]
 }
 ```
 3. 输入的内容为此次脚本的预约内容：

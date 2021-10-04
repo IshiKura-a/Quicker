@@ -8,20 +8,8 @@ import hashlib
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 
-class Reserver(object):
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
-        self.login_url = "https://zjuam.zju.edu.cn/cas/login?service=http://www.tyys.zju.edu.cn/venue-server/sso/manageLogin"
-        self.info_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/day/info"
-        self.order_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/order/info"
-        self.submit_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/order/submit"
-        self.pay_url = "http://www.tyys.zju.edu.cn/venue-server/api/venue/finances/order/pay"
-        self.sess = requests.Session()
-        self.sign = ""
-        self.access_token = ""
-        self.deny_list = []
-
+class Reserver:
+    def __init__(self):
         self.venue_site_id = input("请输入场地编号(玉泉羽毛球场(39)):")
         self.date = input("请输入预约日期(yyyy-mm-dd):")
         candidate_str = input("请输入候选开始时间(hh:mm)，空格隔开:")
@@ -39,6 +27,22 @@ class Reserver(object):
         print("同伴: " + str(self.companion))
         print("手机号: " + self.phone)
         print("-----------------\n")
+
+
+class User(object):
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.login_url = "https://zjuam.zju.edu.cn/cas/login?service=http://www.tyys.zju.edu.cn/venue-server/sso/manageLogin"
+        self.info_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/day/info"
+        self.order_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/order/info"
+        self.submit_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/order/submit"
+        self.pay_url = "http://www.tyys.zju.edu.cn/venue-server/api/venue/finances/order/pay"
+        self.buddy_no_url = "http://www.tyys.zju.edu.cn/venue-server/api/vip/view/buddy_no"
+        self.sess = requests.Session()
+        self.sign = ""
+        self.access_token = ""
+        self.deny_list = []
 
     def login(self):
         """Login to ZJU platform"""
@@ -94,7 +98,7 @@ class Reserver(object):
                              })
         self.access_token = res.json()["data"]["token"]["access_token"]
         if self.access_token != "":
-            print("Login Success!")
+            print(self.username + " Login Success!")
         return self.sess
 
     def _rsa_encrypt(self, password_str, e_str, M_str):
@@ -135,9 +139,9 @@ class Reserver(object):
         c += timestamp + " " + I
         return hashlib.md5(c.encode(encoding='UTF-8')).hexdigest()
 
-    def order(self):
+    def order(self, buddy_no, reserver):
         while 1:
-            info = self.get_info(self.venue_site_id, self.date)["data"]["reservationDateSpaceInfo"][self.date]
+            info = self.get_info(reserver.venue_site_id, reserver.date)["data"]["reservationDateSpaceInfo"][reserver.date]
             space_id = None
             time_id = None
             flag = True
@@ -146,9 +150,9 @@ class Reserver(object):
                     for key, value in space.items():
                         try:
                             int(key)
-                            if value["reservationStatus"] == 1 and self.candidate.count(value["startDate"]) > 0:
+                            if value["reservationStatus"] == 1 and reserver.candidate.count(value["startDate"]) > 0:
                                 if self.deny_list.count({"spaceId": str(space["id"]), "timeId": str(key)}) == 0:
-                                    if self.n_site != 1:
+                                    if reserver.n_site != '1':
                                         if space[str(int(key) + 1)]["reservationStatus"] == 1:
                                             if self.deny_list.count(
                                                     {"spaceId": str(space["id"]), "timeId": str(int(key) + 1)}) == 0:
@@ -169,7 +173,7 @@ class Reserver(object):
             if space_id is None:
                 print("所有场次均被预约")
                 return None
-            elif self.n_site == 1:
+            elif reserver.n_site == '1':
                 order = [{"spaceId": str(space_id), "timeId": str(time_id), "venueSpaceGroupId": None}]
             else:
                 order = [{"spaceId": str(space_id), "timeId": str(time_id), "venueSpaceGroupId": None},
@@ -178,9 +182,9 @@ class Reserver(object):
             timestamp = self.get_timestamp()
             order = str(order).replace(": ", ":").replace(", ", ",").replace("\'", "\"").replace("None", "null")
             params = {
-                "venueSiteId": self.venue_site_id,
-                "reservationDate": self.date,
-                "weekStartDate": self.date,
+                "venueSiteId": reserver.venue_site_id,
+                "reservationDate": reserver.date,
+                "weekStartDate": reserver.date,
                 "reservationOrderJson": order
             }
             self.sign = self.get_sign(path="/api/reservation/order/info", timestamp=timestamp, params=params)
@@ -205,18 +209,20 @@ class Reserver(object):
 
         buddy_ids = ""
         for buddy in sorted(buddy_list, key=lambda i: i['id']):
-            if self.companion.count(buddy["name"]) != 0:
+            if reserver.companion.count(buddy["name"]) != 0:
                 if len(buddy_ids) != 0:
                     buddy_ids += ","
                 buddy_ids += str(buddy["id"])
 
         params = {
-            "venueSiteId": self.venue_site_id,
-            "reservationDate": self.date,
+            "venueSiteId": reserver.venue_site_id,
+            "reservationDate": reserver.date,
             "reservationOrderJson": order,
-            "phone": int(self.phone),
+            "phone": int(reserver.phone),
             "buddyIds": buddy_ids,
-            "weekStartDate": self.date,
+            "weekStartDate": reserver.date,
+            "isCheckBuddyNo": 1,
+            "buddyNo": buddy_no,
             "isOfflineTicket": 1
         }
         timestamp = self.get_timestamp()
@@ -253,13 +259,29 @@ class Reserver(object):
         else:
             return None
 
-    def exec(self):
+    def exec(self, buddy_no, reserver):
         self.login()
-        time.sleep(60)
-        print(self.order())
+        # time.sleep(60)
+        print(self.order(buddy_no, reserver))
 
     def get_timestamp(self):
         return str(int(round(time.time() * 1000)))
+
+    def get_buddy_no(self):
+        self.login()
+        timestamp = self.get_timestamp()
+        params = {}
+        self.sign = self.get_sign(timestamp=timestamp, params=params, path="/api/vip/view/buddy_no")
+        res = self.sess.post(self.buddy_no_url, headers={
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "app-key": "8fceb735082b5a529312040b58ea780b",
+            "cgauthorization": self.access_token,
+            "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+            "sign": self.sign,
+            "timestamp": timestamp
+        })
+        return res.json()['data']
 
 
 class LoginError(Exception):
@@ -267,8 +289,14 @@ class LoginError(Exception):
     pass
 
 
-def job(reserver):
-    reserver.exec()
+def job(user, buddies, reserver):
+    buddy_no = ""
+    for buddy in buddies:
+        tmp = User(buddy['username'], buddy['password'])
+        if buddy_no != "":
+            buddy_no += ","
+        buddy_no += str(tmp.get_buddy_no())
+    user.exec(buddy_no, reserver)
 
 
 def main():
@@ -276,14 +304,18 @@ def main():
     username = config['username']
     password = config['password']
 
+    resever = Reserver()
+
     schedule = BlockingScheduler()
-    reserver = Reserver(username, password)
+    main_user = User(username, password)
 
     time_str = input("请输入执行时间: ")
     run_time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-    schedule.add_job(job, 'date', next_run_time=run_time, args=[reserver])
-    schedule.print_jobs()
-    schedule.start()
+    # schedule.add_job(job, 'date', next_run_time=run_time, args=[main_user, config['buddies'], resever])
+    # schedule.print_jobs()
+    # schedule.start()
+
+    job(main_user, config['buddies'], resever)
 
 
 if __name__ == "__main__":
