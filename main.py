@@ -6,6 +6,7 @@ import re
 import time
 import hashlib
 from apscheduler.schedulers.blocking import BlockingScheduler
+from dateutil import tz
 
 
 class Reserver:
@@ -141,7 +142,8 @@ class User(object):
 
     def order(self, buddy_no, reserver):
         while 1:
-            info = self.get_info(reserver.venue_site_id, reserver.date)["data"]["reservationDateSpaceInfo"][reserver.date]
+            info = self.get_info(reserver.venue_site_id, reserver.date)["data"]["reservationDateSpaceInfo"][
+                reserver.date]
             space_id = None
             time_id = None
             flag = True
@@ -261,7 +263,7 @@ class User(object):
 
     def exec(self, buddy_no, reserver):
         self.login()
-        # time.sleep(60)
+        time.sleep(60)
         print(self.order(buddy_no, reserver))
 
     def get_timestamp(self):
@@ -311,9 +313,9 @@ def main():
 
     time_str = input("请输入执行时间: ")
     run_time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-    # schedule.add_job(job, 'date', next_run_time=run_time, args=[main_user, config['buddies'], resever])
-    # schedule.print_jobs()
-    # schedule.start()
+    schedule.add_job(job, 'date', next_run_time=run_time, args=[main_user, config['buddies'], resever])
+    schedule.print_jobs()
+    schedule.start()
 
     job(main_user, config['buddies'], resever)
 
