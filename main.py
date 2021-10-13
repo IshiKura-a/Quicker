@@ -5,20 +5,33 @@ import json
 import re
 import time
 import hashlib
+import argparse
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, JobExecutionEvent
 from dateutil import tz
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--input', type=str)
+args = parser.parse_args()
+schedule = BlockingScheduler()
 
 class Reserver:
     def __init__(self):
-        self.venue_site_id = input("请输入场地编号(玉泉羽毛球场(39)):")
-        self.date = input("请输入预约日期(yyyy-mm-dd):")
-        candidate_str = input("请输入候选开始时间(hh:mm)，空格隔开:")
-        self.candidate = [self.date + " " + i for i in candidate_str.split(" ")]
-        self.n_site = input("请输入预约场数(1/2):")
-        companion_str = input("请输入同伴姓名（必须一起预约过）:")
-        self.companion = companion_str.split(" ")
-        self.phone = input("请输入手机号:")
+        with open(args.input, 'r', encoding='UTF-8') as f:
+            # 请输入场地编号(玉泉羽毛球场(39)):
+            self.venue_site_id = f.readline().replace('\n', '')
+            # 请输入预约日期(yyyy-mm-dd):
+            self.date = f.readline().replace('\n', '')
+            # 请输入候选开始时间(hh:mm)，空格隔开:
+            candidate_str = f.readline().replace('\n', '')
+            self.candidate = [self.date + " " + i for i in candidate_str.split(" ")]
+            # 请输入预约场数(1/2):
+            self.n_site = f.readline().replace('\n', '')
+            # 请输入同伴姓名（必须一起预约过）:
+            companion_str = f.readline().replace('\n', '')
+            self.companion = companion_str.split(" ")
+            # 请输入手机号:
+            self.phone = f.readline().replace('\n', '')
 
         print("\n-----------------")
         print("场地编号: " + str(self.venue_site_id))
@@ -142,7 +155,10 @@ class User(object):
 
     def order(self, buddy_no, reserver):
         while 1:
-            info = self.get_info(reserver.venue_site_id, reserver.date)["data"]["reservationDateSpaceInfo"][
+            response = self.get_info(reserver.venue_site_id, reserver.date)
+            if response['code'] != '200':
+                return response
+            info = response["data"]["reservationDateSpaceInfo"][
                 reserver.date]
             space_id = None
             time_id = None
@@ -256,15 +272,20 @@ class User(object):
             "timestamp": timestamp
         }, params=params).json()
 
-        if res["code"] == 200:
-            return res
-        else:
-            return None
+        return res
 
     def exec(self, buddy_no, reserver):
-        self.login()
-        time.sleep(60)
-        print(self.order(buddy_no, reserver))
+        try:
+            self.login()
+            result = self.order(buddy_no, reserver)
+            if result["code"] == 200:
+                print('Success in ' + str(datetime.datetime.utcnow()))
+            else:
+                print(result)
+            return result
+        except BaseException as data:
+            print(data)
+            return {'code': '404'}
 
     def get_timestamp(self):
         return str(int(round(time.time() * 1000)))
@@ -291,6 +312,12 @@ class LoginError(Exception):
     pass
 
 
+def listener(event):
+    if event.retval['code'] == '200':
+        schedule.remove_job(schedule.get_jobs()[0].id)
+        exit(0)
+
+
 def job(user, buddies, reserver):
     buddy_no = ""
     for buddy in buddies:
@@ -298,7 +325,8 @@ def job(user, buddies, reserver):
         if buddy_no != "":
             buddy_no += ","
         buddy_no += str(tmp.get_buddy_no())
-    user.exec(buddy_no, reserver)
+
+    return user.exec(buddy_no, reserver)
 
 
 def main():
@@ -308,16 +336,11 @@ def main():
 
     resever = Reserver()
 
-    schedule = BlockingScheduler()
     main_user = User(username, password)
 
-    time_str = input("请输入执行时间: ")
-    run_time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-    schedule.add_job(job, 'date', next_run_time=run_time, args=[main_user, config['buddies'], resever])
-    schedule.print_jobs()
+    schedule.add_listener(listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+    schedule.add_job(job, 'interval', minutes=3, args=[main_user, config['buddies'], resever])
     schedule.start()
-
-    job(main_user, config['buddies'], resever)
 
 
 if __name__ == "__main__":
