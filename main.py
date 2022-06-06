@@ -170,6 +170,7 @@ class User(object):
                 return response
             info = response["data"]["reservationDateSpaceInfo"][
                 reserver.date]
+            token = response["data"]["token"]
             space_id = None
             time_id = None
             flag = True
@@ -198,7 +199,6 @@ class User(object):
                     break
             if space_id is None:
                 print("所有场次均被预约")
-                sys.exit(0)
                 return None
             elif reserver.n_site == '1':
                 order = [{"spaceId": str(space_id), "timeId": str(time_id), "venueSpaceGroupId": None}]
@@ -212,7 +212,8 @@ class User(object):
                 "venueSiteId": reserver.venue_site_id,
                 "reservationDate": reserver.date,
                 "weekStartDate": reserver.date,
-                "reservationOrderJson": order
+                "reservationOrderJson": order,
+                "token": token,
             }
             self.sign = self.get_sign(path="/api/reservation/order/info", timestamp=timestamp, params=params)
             res = self.sess.post(self.order_url, headers={
@@ -251,7 +252,8 @@ class User(object):
             "weekStartDate": reserver.date,
             "isCheckBuddyNo": 1,
             "buddyNo": buddy_no,
-            "isOfflineTicket": 1
+            "isOfflineTicket": 1,
+            "token": token,
         }
         timestamp = self.get_timestamp()
         self.sign = self.get_sign(timestamp, "/api/reservation/order/submit", params)
@@ -291,7 +293,7 @@ class User(object):
             if mode == 'once':
                 time.sleep(60)
             result = self.order(buddy_no, reserver)
-            if result["code"] == 200:
+            if result is not None and result["code"] == 200:
                 print('Success in {}'.format(datetime.datetime.now(tz.gettz('Asia/Shanghai'))))
             else:
                 print('{}: {}'.format(datetime.datetime.now(tz.gettz('Asia/Shanghai')), result))
@@ -326,9 +328,16 @@ class LoginError(Exception):
 
 
 def listener(event):
-    if str(event.retval['code']) == '200':
-        schedule.remove_job(schedule.get_jobs()[0].id)
-        sys.exit(0)
+    jobs = schedule.get_jobs()
+    if event.retval is None:
+        if len(jobs) > 0:
+            schedule.remove_job(schedule.get_jobs()[0].id)
+    elif str(event.retval['code']) == '200':
+        if len(jobs) > 0:
+            schedule.remove_job(schedule.get_jobs()[0].id)
+
+    if len(jobs) == 0:
+        schedule.shutdown(wait=False)
 
 
 def job(user, buddies, reserver, mode):
@@ -364,7 +373,7 @@ def main():
     schedule.print_jobs()
     schedule.start()
 
-    # job(main_user, config['buddies'], resever)
+    # job(main_user, config['buddies'], resever, args.mode)
 
 
 if __name__ == "__main__":
