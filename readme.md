@@ -1,6 +1,8 @@
 # ZJU场馆预约脚本
 ## Pre-processing
 
+！！！本项目遵循GPL开源协议
+
 1. 执行脚本前需要安装需要的包
 2. 在`main.py`所在目录下创建`config.json`，内容为统一身份验证的用户名和密码：
 ```json
