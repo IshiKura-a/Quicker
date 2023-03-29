@@ -7,18 +7,24 @@ import re
 import time
 import hashlib
 import argparse
+import logging
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, JobExecutionEvent
 from dateutil import tz
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input', type=str)
-parser.add_argument('--mode', choices=['interval', 'once'])
+parser.add_argument('--mode', choices=['interval', 'once', 'debug'])
 parser.add_argument('--start_time',
                     default=datetime.datetime.now(tz.gettz('Asia/Shanghai')).strftime("%Y-%m-%d %H:%M:%S"),
-                    help='Required when mode == once')
+                    )
 args = parser.parse_args()
 schedule = BlockingScheduler()
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+handlers = [logging.StreamHandler()]
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers)
+logger = logging.getLogger()
 
 
 class Reserver:
@@ -39,14 +45,14 @@ class Reserver:
             # 请输入手机号:
             self.phone = f.readline().replace('\n', '')
 
-        print("\n-----------------")
-        print("场地编号: " + str(self.venue_site_id))
-        print("预约日期: " + str(self.date))
-        print("候选时间: " + str(self.candidate))
-        print("预约场数: " + str(self.n_site))
-        print("同伴: " + str(self.companion))
-        print("手机号: " + self.phone)
-        print("-----------------\n")
+        logger.info("-----------------")
+        logger.info("场地编号: " + str(self.venue_site_id))
+        logger.info("预约日期: " + str(self.date))
+        logger.info("候选时间: " + str(self.candidate))
+        logger.info("预约场数: " + str(self.n_site))
+        logger.info("同伴: " + str(self.companion))
+        logger.info("手机号: " + self.phone)
+        logger.info("-----------------\n")
 
 
 class User(object):
@@ -71,7 +77,7 @@ class User(object):
             execution = re.search(
                 'name="execution" value="(.*?)"', res.text).group(1)
         except BaseException as exception:
-            print(res.text)
+            logger.critical(res.text)
             raise exception
         res = self.sess.get(
             url='https://zjuam.zju.edu.cn/cas/v2/getPubKey').json()
@@ -122,7 +128,7 @@ class User(object):
                              })
         self.access_token = res.json()["data"]["token"]["access_token"]
         if self.access_token != "":
-            print(self.username + " Login Success!")
+            logger.info(self.username + " Login Success!")
         return self.sess
 
     def _rsa_encrypt(self, password_str, e_str, M_str):
@@ -163,48 +169,37 @@ class User(object):
         c += timestamp + " " + I
         return hashlib.md5(c.encode(encoding='UTF-8')).hexdigest()
 
+    @staticmethod
+    def choose_space(info, reserver):
+        for space in info:
+            for key, value in space.items():
+                if key.isnumeric() and value["reservationStatus"] == 1 and value["startDate"] in reserver.candidate:
+                    if reserver.n_site == 2:
+                        if str(int(key) + 1) in space.keys() and space[key + 1]["reservationStatus"] == 1:
+                            return [{
+                                "spaceId": str(space["id"]), "timeId": str(int(key) + 1), "venueSpaceGroupId": None
+                            }, {
+                                "spaceId": str(space["id"]), "timeId": str(key), "venueSpaceGroupId": None
+                            }]
+                    else:
+                        return [{
+                            "spaceId": str(space["id"]), "timeId": str(key), "venueSpaceGroupId": None
+                        }]
+        return []
+
     def order(self, buddy_no, reserver):
-        while 1:
-            response = self.get_info(reserver.venue_site_id, reserver.date)
-            if str(response['code']) != '200':
-                return response
-            info = response["data"]["reservationDateSpaceInfo"][
-                reserver.date]
-            token = response["data"]["token"]
-            space_id = None
-            time_id = None
-            flag = True
-            for space in info:
-                if flag:
-                    for key, value in space.items():
-                        try:
-                            if value["reservationStatus"] == 1 and reserver.candidate.count(value["startDate"]) > 0:
-                                if self.deny_list.count({"spaceId": str(space["id"]), "timeId": str(key)}) == 0:
-                                    if reserver.n_site != '1':
-                                        if space[str(int(key) + 1)]["reservationStatus"] == 1:
-                                            if self.deny_list.count(
-                                                    {"spaceId": str(space["id"]), "timeId": str(int(key) + 1)}) == 0:
-                                                space_id = str(space["id"])
-                                                time_id = str(key)
-                                                flag = False
-                                                break
-                                    else:
-                                        space_id = str(space["id"])
-                                        time_id = str(key)
-                                        flag = False
-                                        break
-                        except Exception:
-                            pass
-                else:
-                    break
-            if space_id is None:
-                print("所有场次均被预约")
+        response = self.get_info(reserver.venue_site_id, reserver.date)
+        if str(response['code']) != '200':
+            return response
+        info = response["data"]["reservationDateSpaceInfo"][
+            reserver.date]
+        token = response["data"]["token"]
+
+        while True:
+            order = self.choose_space(info, reserver)
+            if len(order) == 0:
+                logger.critical("所有场次均被预约")
                 return None
-            elif reserver.n_site == '1':
-                order = [{"spaceId": str(space_id), "timeId": str(time_id), "venueSpaceGroupId": None}]
-            else:
-                order = [{"spaceId": str(space_id), "timeId": str(time_id), "venueSpaceGroupId": None},
-                         {"spaceId": str(space_id), "timeId": str(int(time_id) + 1), "venueSpaceGroupId": None}]
 
             timestamp = self.get_timestamp()
             order = str(order).replace(": ", ":").replace(", ", ",").replace("\'", "\"").replace("None", "null")
@@ -225,15 +220,11 @@ class User(object):
                 "sign": self.sign,
                 "timestamp": timestamp
             }, params=params).json()
-            print(res)
+
             if res["code"] == 200:
+                logger.info(order)
                 break
-            else:
-                for o in order:
-                    self.deny_list.append({
-                        "spaceId": o["spaceId"],
-                        "timeId": o["timeId"],
-                    })
+
         buddy_list = res["data"]["buddyList"]
 
         buddy_ids = ""
@@ -290,17 +281,18 @@ class User(object):
         try:
             self.sess = requests.Session()
             self.login()
-            if mode == 'once':
-                time.sleep(60)
             result = self.order(buddy_no, reserver)
-            if result is not None and result["code"] == 200:
-                print('Success in {}'.format(datetime.datetime.now(tz.gettz('Asia/Shanghai'))))
+            if result is not None:
+                logger.info(result)
+                if result["code"] == 200:
+                    logger.info('Success!')
+                return result
             else:
-                print('{}: {}'.format(datetime.datetime.now(tz.gettz('Asia/Shanghai')), result))
-            return result
+                return {'code': '409'}
+
         except BaseException:
-            print('{}: {}'.format(datetime.datetime.now(tz.gettz('Asia/Shanghai')), traceback.format_exc()))
-            return {'code': '404'}
+            logger.info(traceback.format_exc())
+            return {'code': '400'}
 
     def get_timestamp(self):
         return str(int(round(time.time() * 1000)))
@@ -347,7 +339,7 @@ def job(user, buddies, reserver, mode):
         if buddy_no != "":
             buddy_no += ","
         buddy_no += str(tmp.get_buddy_no())
-    print('buddy_no: ', buddy_no)
+    logger.info(f'buddy_no: {buddy_no}')
     return user.exec(buddy_no, reserver, mode)
 
 
@@ -360,7 +352,7 @@ def main():
 
     main_user = User(username, password)
 
-    print(args)
+    logger.info(args)
     schedule.add_listener(listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     run_time = datetime.datetime.strptime(args.start_time, "%Y-%m-%d %H:%M:%S").replace(
         tzinfo=tz.gettz('Asia/Shanghai'))
@@ -368,12 +360,14 @@ def main():
         schedule.add_job(job, 'interval', seconds=10,
                          args=[main_user, config['buddies'], resever, args.mode],
                          start_date=run_time)
-    else:
+        schedule.print_jobs()
+        schedule.start()
+    elif args.mode == 'once':
         schedule.add_job(job, 'date', next_run_time=run_time, args=[main_user, config['buddies'], resever, args.mode])
-    schedule.print_jobs()
-    schedule.start()
-
-    # job(main_user, config['buddies'], resever, args.mode)
+        schedule.print_jobs()
+        schedule.start()
+    elif args.mode == 'debug':
+        job(main_user, config['buddies'], resever, args.mode)
 
 
 if __name__ == "__main__":
