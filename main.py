@@ -188,30 +188,68 @@ class User(object):
         return []
 
     def order(self, buddy_no, reserver):
-        response = self.get_info(reserver.venue_site_id, reserver.date)
-        if str(response['code']) != '200':
-            return response
-        info = response["data"]["reservationDateSpaceInfo"][
-            reserver.date]
-        token = response["data"]["token"]
-
         while True:
-            order = self.choose_space(info, reserver)
-            if len(order) == 0:
-                logger.critical("所有场次均被预约")
-                return None
+            response = self.get_info(reserver.venue_site_id, reserver.date)
+            if str(response['code']) != '200':
+                return response
+            info = response["data"]["reservationDateSpaceInfo"][
+                reserver.date]
+            token = response["data"]["token"]
 
-            timestamp = self.get_timestamp()
-            order = str(order).replace(": ", ":").replace(", ", ",").replace("\'", "\"").replace("None", "null")
+            while True:
+                order = self.choose_space(info, reserver)
+                if len(order) == 0:
+                    logger.critical("所有场次均被预约")
+                    return None
+
+                timestamp = self.get_timestamp()
+                order = str(order).replace(": ", ":").replace(", ", ",").replace("\'", "\"").replace("None", "null")
+                params = {
+                    "venueSiteId": reserver.venue_site_id,
+                    "reservationDate": reserver.date,
+                    "weekStartDate": reserver.date,
+                    "reservationOrderJson": order,
+                    "token": token,
+                }
+                self.sign = self.get_sign(path="/api/reservation/order/info", timestamp=timestamp, params=params)
+                res = self.sess.post(self.order_url, headers={
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "zh-CN,zh;q=0.9",
+                    "app-key": "8fceb735082b5a529312040b58ea780b",
+                    "cgauthorization": self.access_token,
+                    "content-type": "application/x-www-form-urlencoded",
+                    "sign": self.sign,
+                    "timestamp": timestamp
+                }, params=params).json()
+
+                if res["code"] == 200:
+                    logger.info(order)
+                    break
+
+            buddy_list = res["data"]["buddyList"]
+
+            buddy_ids = ""
+            for buddy in sorted(buddy_list, key=lambda i: i['id']):
+                if buddy["name"] in reserver.companion:
+                    if len(buddy_ids) != 0:
+                        buddy_ids += ","
+                    buddy_ids += str(buddy["id"])
+
             params = {
                 "venueSiteId": reserver.venue_site_id,
                 "reservationDate": reserver.date,
-                "weekStartDate": reserver.date,
                 "reservationOrderJson": order,
+                "phone": int(reserver.phone),
+                "buddyIds": buddy_ids,
+                "weekStartDate": reserver.date,
+                "isCheckBuddyNo": 1,
+                "buddyNo": buddy_no,
+                "isOfflineTicket": 1,
                 "token": token,
             }
-            self.sign = self.get_sign(path="/api/reservation/order/info", timestamp=timestamp, params=params)
-            res = self.sess.post(self.order_url, headers={
+            timestamp = self.get_timestamp()
+            self.sign = self.get_sign(timestamp, "/api/reservation/order/submit", params)
+            res = self.sess.post(self.submit_url, headers={
                 "accept": "application/json, text/plain, */*",
                 "accept-language": "zh-CN,zh;q=0.9",
                 "app-key": "8fceb735082b5a529312040b58ea780b",
@@ -222,41 +260,7 @@ class User(object):
             }, params=params).json()
 
             if res["code"] == 200:
-                logger.info(order)
                 break
-
-        buddy_list = res["data"]["buddyList"]
-
-        buddy_ids = ""
-        for buddy in sorted(buddy_list, key=lambda i: i['id']):
-            if reserver.companion.count(buddy["name"]) != 0:
-                if len(buddy_ids) != 0:
-                    buddy_ids += ","
-                buddy_ids += str(buddy["id"])
-
-        params = {
-            "venueSiteId": reserver.venue_site_id,
-            "reservationDate": reserver.date,
-            "reservationOrderJson": order,
-            "phone": int(reserver.phone),
-            "buddyIds": buddy_ids,
-            "weekStartDate": reserver.date,
-            "isCheckBuddyNo": 1,
-            "buddyNo": buddy_no,
-            "isOfflineTicket": 1,
-            "token": token,
-        }
-        timestamp = self.get_timestamp()
-        self.sign = self.get_sign(timestamp, "/api/reservation/order/submit", params)
-        res = self.sess.post(self.submit_url, headers={
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "app-key": "8fceb735082b5a529312040b58ea780b",
-            "cgauthorization": self.access_token,
-            "content-type": "application/x-www-form-urlencoded",
-            "sign": self.sign,
-            "timestamp": timestamp
-        }, params=params).json()
 
         trade_no = res["data"]["orderInfo"]["tradeNo"]
         params = {
@@ -324,7 +328,7 @@ def listener(event):
     if event.retval is None:
         if len(jobs) > 0:
             schedule.remove_job(schedule.get_jobs()[0].id)
-    elif str(event.retval['code']) == '200':
+    elif event.retval['code'] in [200, 409]:
         if len(jobs) > 0:
             schedule.remove_job(schedule.get_jobs()[0].id)
 
