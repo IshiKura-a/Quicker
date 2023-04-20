@@ -4,3 +4,7 @@ venv
 
 .idea
 .vscode
+
+*.jpg
+*.jpeg
+*.png

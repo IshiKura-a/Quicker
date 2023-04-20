@@ -1,5 +1,9 @@
 import datetime
+import os
+import random
 import sys
+import ddddocr
+import base64
 import traceback
 import requests
 import json
@@ -8,10 +12,15 @@ import time
 import hashlib
 import argparse
 import logging
+import cv2
 
+import numpy as np
+
+from io import BytesIO
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, JobExecutionEvent
 from dateutil import tz
+from Crypto.Cipher import AES
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input', type=str)
@@ -65,10 +74,13 @@ class User(object):
         self.submit_url = "http://www.tyys.zju.edu.cn/venue-server/api/reservation/order/submit"
         self.pay_url = "http://www.tyys.zju.edu.cn/venue-server/api/venue/finances/order/pay"
         self.buddy_no_url = "http://www.tyys.zju.edu.cn/venue-server/api/vip/view/buddy_no"
+        self.get_captcha_url = "http://www.tyys.zju.edu.cn/venue-server/api/captcha/get"
+        self.check_captcha_url = "http://www.tyys.zju.edu.cn/venue-server/api/captcha/check"
         self.sess = requests.Session()
         self.sign = ""
         self.access_token = ""
         self.deny_list = []
+        self.local_storage = {}
 
     def login(self):
         """Login to ZJU platform"""
@@ -235,6 +247,10 @@ class User(object):
                         buddy_ids += ","
                     buddy_ids += str(buddy["id"])
 
+            captcha_verification = self.solve_captcha(mode='clickWord')
+
+            # 防止：{'code': 250, 'message': '预约步骤流程耗时异常，订单提交失败', 'data': None}
+            time.sleep(1)
             params = {
                 "venueSiteId": reserver.venue_site_id,
                 "reservationDate": reserver.date,
@@ -243,6 +259,7 @@ class User(object):
                 "buddyIds": buddy_ids,
                 "weekStartDate": reserver.date,
                 "isCheckBuddyNo": 1,
+                "captchaVerification": captcha_verification,
                 "buddyNo": buddy_no,
                 "isOfflineTicket": 1,
                 "token": token,
@@ -261,6 +278,8 @@ class User(object):
 
             if res["code"] == 200:
                 break
+            else:
+                logger.info(res)
 
         trade_no = res["data"]["orderInfo"]["tradeNo"]
         params = {
@@ -316,6 +335,132 @@ class User(object):
             "timestamp": timestamp
         })
         return res.json()['data']
+
+    @staticmethod
+    def ocr_captcha(base64_img, word_list):
+        det = ddddocr.DdddOcr(det=True)
+        ocr = ddddocr.DdddOcr(beta=True)
+
+        img = base64.b64decode(base64_img)
+        stream = BytesIO(img)
+        image_bytes = stream.read()
+
+        poses = det.detection(image_bytes)
+
+        arr = np.frombuffer(img, np.uint8)
+        im = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+        decode_dict = {}
+        for box in poses:
+            x1, y1, x2, y2 = box
+            cropped_img = im[y1:y2, x1:x2]
+            cv2.imwrite("cropped.jpg", cropped_img)
+            with open("cropped.jpg", 'rb') as f:
+                cropped_img = f.read()
+            res = ocr.classification(cropped_img)
+            decode_dict[res] = {
+                'x': int((x1 + x2) / 2),
+                'y': int((y1 + y2) / 2),
+            }
+
+        res = []
+        for word in word_list:
+            if word in decode_dict.keys():
+                res.append(decode_dict[word])
+            else:
+                candidates = list(filter(lambda x: x not in word_list, decode_dict.keys()))
+                # 碰运气
+                res.append(decode_dict[random.choice(candidates)])
+        return res
+
+    def solve_click_word(self):
+        if 'slider' not in self.local_storage.keys():
+            # set uuid
+            t = '0123456789abcdef'
+            e = []
+            for i in range(36):
+                e.append(t[int(np.floor(16 * np.random.rand()))])
+            e[14] = '4'
+            e[19] = t[3 & int(e[19], 16) | 8]
+            e[8] = e[13] = e[18] = e[23] = '-'
+            self.local_storage['slider'] = 'slider-' + ''.join(e)
+            self.local_storage['point'] = 'point-' + ''.join(e)
+        client_uid = self.local_storage['point']
+
+        timestamp = self.get_timestamp()
+
+        url = f'{self.get_captcha_url}?captchaType=clickWord&clientUid={client_uid}&ts={timestamp}&nocache={timestamp}'
+        params = {
+            'captchaType': 'clickWord',
+            'clientUid': client_uid,
+            'ts': timestamp,
+            'nocache': timestamp
+        }
+        self.sign = self.get_sign(timestamp=timestamp, params=params, path="/api/captcha/get")
+        res = self.sess.get(url, headers={
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "app-key": "8fceb735082b5a529312040b58ea780b",
+            "cgauthorization": self.access_token,
+            "content-type": "application/x-www-form-urlencoded",
+            "sign": self.sign,
+            "timestamp": timestamp
+        }).json()
+        return res['data']['repData']
+
+    def solve_captcha(self, mode='clickWord'):
+        def h(*wargs):
+            def pkcs7(m):
+                return m + (chr(16 - len(m) % 16) * (16 - len(m) % 16)).encode('utf-8')
+
+            t = wargs[1] if len(wargs) > 1 and wargs[1] != 0 else 'XwKsGlMcdPMEhR1B'
+            s = t.encode('utf-8')
+            i = wargs[0].encode('utf-8')
+            cipher = AES.new(s, AES.MODE_ECB)
+            text = base64.b64encode(cipher.encrypt(pkcs7(i))).decode('utf-8')
+            return text
+
+        def to_str(x):
+            return json.dumps(x, separators=(',', ':'))
+
+        if mode == 'clickWord':
+            while True:
+                data = self.solve_click_word()
+                base64_img = data['originalImageBase64']
+                word_list = data['wordList']
+                token = data['token']
+                point_arr = self.ocr_captcha(base64_img, word_list)
+
+                if 'secretKey' in data.keys():
+                    secret_key = data['secretKey']
+                    point_json = h(to_str(point_arr), secret_key)
+                else:
+                    point_json = h(to_str(point_arr))
+                params = {
+                    'captchaType': mode,
+                    'pointJson': point_json,
+                    'token': token
+                }
+                timestamp = self.get_timestamp()
+                self.sign = self.get_sign(timestamp=timestamp, params=params, path="/api/captcha/check")
+                res = self.sess.post(self.check_captcha_url, headers={
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "zh-CN,zh;q=0.9",
+                    "app-key": "8fceb735082b5a529312040b58ea780b",
+                    "cgauthorization": self.access_token,
+                    "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "sign": self.sign,
+                    "timestamp": timestamp
+                }, params=params)
+                if res.json()['data']['repCode'] == '0000':
+                    return h(token + '---' + to_str(point_arr), secret_key) if 'secretKey' in data.keys() else h(
+                        token + '---' + to_str(point_arr))
+                else:
+                    logger.info(f'验证码错误，重试中...')
+                    time.sleep(0.1)
+        elif mode == 'blockPuzzle':
+            # 暂时没用到
+            raise NotImplementedError
 
 
 class LoginError(Exception):
@@ -375,4 +520,5 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.stdout = open(os.devnull, 'w')
     main()
